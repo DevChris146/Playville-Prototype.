@@ -1,0 +1,303 @@
+Shared (base layer)
+src/Shared/PlayvilleTypes.ts
+export type PetStage = "Newborn" | "Junior" | "Teen" | "Adult";
+
+export type Job = "Cashier" | "DeliveryDriver" | "FastFoodWorker";
+
+export interface PlayvilleQuest {
+    description: string;
+    reward: number;
+    completed: boolean;
+}
+
+export interface PlayvillePlayerData {
+    coins: number;
+    pets: string[];
+    currentJob?: Job;
+    quests: PlayvilleQuest[];
+}
+src/Shared/PlayvilleRemotes.ts
+import { ReplicatedStorage } from "@rbxts/services";
+
+const remotesFolder = new Instance("Folder");
+remotesFolder.Name = "PlayvilleRemotes";
+remotesFolder.Parent = ReplicatedStorage;
+
+export namespace PlayvilleRemotes {
+    export const HatchEgg = new Instance("RemoteFunction");
+    HatchEgg.Name = "HatchEgg";
+    HatchEgg.Parent = remotesFolder;
+
+    export const LevelUpPet = new Instance("RemoteFunction");
+    LevelUpPet.Name = "LevelUpPet";
+    LevelUpPet.Parent = remotesFolder;
+
+    export const AssignJob = new Instance("RemoteFunction");
+    AssignJob.Name = "AssignJob";
+    AssignJob.Parent = remotesFolder;
+
+    export const CompleteShift = new Instance("RemoteFunction");
+    CompleteShift.Name = "CompleteShift";
+    CompleteShift.Parent = remotesFolder;
+
+    export const GetQuests = new Instance("RemoteFunction");
+    GetQuests.Name = "GetQuests";
+    GetQuests.Parent = remotesFolder;
+
+    export const CompleteQuest = new Instance("RemoteFunction");
+    CompleteQuest.Name = "CompleteQuest";
+    CompleteQuest.Parent = remotesFolder;
+}
+2. Server Systems
+src/Server/DataSystem/PlayvilleDataService.ts
+import { Players } from "@rbxts/services";
+import { PlayvillePlayerData } from "Shared/PlayvilleTypes";
+
+const defaultData: PlayvillePlayerData = {
+    coins: 0,
+    pets: [],
+    quests: [],
+};
+
+const playerData = new Map<Player, PlayvillePlayerData>();
+
+export namespace PlayvilleDataService {
+    export function getData(player: Player): PlayvillePlayerData {
+        return playerData.get(player) ?? { ...defaultData };
+    }
+
+    export function setData(player: Player, data: PlayvillePlayerData) {
+        playerData.set(player, data);
+    }
+
+    export function addCoins(player: Player, amount: number) {
+        const data = getData(player);
+        data.coins += amount;
+        setData(player, data);
+    }
+
+    export function init() {
+        Players.PlayerAdded.Connect((player) => {
+            playerData.set(player, { ...defaultData });
+            print(`[Playville] Data initialized for ${player.Name}`);
+        });
+
+        Players.PlayerRemoving.Connect((player) => {
+            playerData.delete(player);
+            print(`[Playville] Data cleared for ${player.Name}`);
+            // TODO: Save to DataStore
+        });
+    }
+}
+src/Server/PetSystem/PlayvilleEggService.ts
+import { PlayvilleDataService } from "Server/DataSystem/PlayvilleDataService";
+
+export namespace PlayvilleEggService {
+    const availablePets = ["Dog", "Cat", "Dragon"];
+
+    export function hatchEgg(player: Player) {
+        const chosen = availablePets[math.random(1, availablePets.size()) - 1];
+        const data = PlayvilleDataService.getData(player);
+        data.pets.push(chosen);
+        PlayvilleDataService.setData(player, data);
+
+        print(`[Playville] ${player.Name} hatched a ${chosen}!`);
+        return chosen;
+    }
+}
+src/Server/PetSystem/PlayvillePetService.ts
+import { PetStage } from "Shared/PlayvilleTypes";
+
+const stages: PetStage[] = ["Newborn", "Junior", "Teen", "Adult"];
+
+export namespace PlayvillePetService {
+    export function getNextStage(current: PetStage): PetStage {
+        const index = stages.indexOf(current);
+        return stages[math.min(index + 1, stages.size() - 1)];
+    }
+
+    export function levelUpPet(pet: { name: string; stage: PetStage }) {
+        const newStage = getNextStage(pet.stage);
+        pet.stage = newStage;
+        print(`[Playville] ${pet.name} grew into ${newStage}!`);
+        return pet;
+    }
+}
+src/Server/JobSystem/PlayvilleJobService.ts
+import { PlayvilleDataService } from "Server/DataSystem/PlayvilleDataService";
+import { Job } from "Shared/PlayvilleTypes";
+
+const jobRewards: Record<Job, number> = {
+    Cashier: 25,
+    DeliveryDriver: 50,
+    FastFoodWorker: 30,
+};
+
+export namespace PlayvilleJobService {
+    export function assignJob(player: Player, job: Job) {
+        const data = PlayvilleDataService.getData(player);
+        data.currentJob = job;
+        PlayvilleDataService.setData(player, data);
+
+        print(`[Playville Jobs] ${player.Name} became a ${job}`);
+        return job;
+    }
+
+    export function completeShift(player: Player) {
+        const data = PlayvilleDataService.getData(player);
+        if (!data.currentJob) return "No job assigned";
+
+        const reward = jobRewards[data.currentJob];
+        data.coins += reward;
+        PlayvilleDataService.setData(player, data);
+
+        print(`[Playville Jobs] ${player.Name} completed shift as ${data.currentJob}, earned ${reward} coins`);
+        return reward;
+    }
+}
+src/Server/QuestSystem/PlayvilleQuestService.ts
+import { PlayvilleDataService } from "Server/DataSystem/PlayvilleDataService";
+import { PlayvilleQuest } from "Shared/PlayvilleTypes";
+
+const dailyQuests: PlayvilleQuest[] = [
+    { description: "Feed a pet", reward: 20, completed: false },
+    { description: "Complete a job shift", reward: 40, completed: false },
+    { description: "Hatch an egg", reward: 50, completed: false },
+];
+
+export namespace PlayvilleQuestService {
+    export function getQuests(player: Player): PlayvilleQuest[] {
+        const data = PlayvilleDataService.getData(player);
+        if (data.quests.size() === 0) {
+            data.quests = dailyQuests.map((q) => ({ ...q }));
+            PlayvilleDataService.setData(player, data);
+        }
+        return data.quests;
+    }
+
+    export function completeQuest(player: Player, questIndex: number) {
+        const data = PlayvilleDataService.getData(player);
+        const quest = data.quests[questIndex];
+        if (!quest || quest.completed) return "Quest already completed";
+
+        quest.completed = true;
+        data.coins += quest.reward;
+        PlayvilleDataService.setData(player, data);
+
+        print(`[Playville Quests] ${player.Name} completed quest: ${quest.description}`);
+        return quest.reward;
+    }
+}
+3. Server Remote Handlers
+src/Server/PlayvilleRemotes.server.ts
+import { PlayvilleRemotes } from "Shared/PlayvilleRemotes";
+import { PlayvilleEggService } from "Server/PetSystem/PlayvilleEggService";
+import { PlayvillePetService } from "Server/PetSystem/PlayvillePetService";
+import { PlayvilleJobService } from "Server/JobSystem/PlayvilleJobService";
+import { PlayvilleQuestService } from "Server/QuestSystem/PlayvilleQuestService";
+
+// Eggs
+PlayvilleRemotes.HatchEgg.OnServerInvoke = (player) => PlayvilleEggService.hatchEgg(player);
+PlayvilleRemotes.LevelUpPet.OnServerInvoke = (player, petName: string, stage: string) =>
+    PlayvillePetService.levelUpPet({ name: petName, stage: stage as "Newborn" | "Junior" | "Teen" | "Adult" });
+
+// Jobs
+PlayvilleRemotes.AssignJob.OnServerInvoke = (player, job: string) =>
+    PlayvilleJobService.assignJob(player, job as "Cashier" | "DeliveryDriver" | "FastFoodWorker");
+PlayvilleRemotes.CompleteShift.OnServerInvoke = (player) => PlayvilleJobService.completeShift(player);
+
+// Quests
+PlayvilleRemotes.GetQuests.OnServerInvoke = (player) => PlayvilleQuestService.getQuests(player);
+PlayvilleRemotes.CompleteQuest.OnServerInvoke = (player, questIndex: number) =>
+    PlayvilleQuestService.completeQuest(player, questIndex);
+4. Client UI
+Egg UI – src/Client/UI/PlayvilleEggUI.client.ts
+import { Players } from "@rbxts/services";
+import { PlayvilleRemotes } from "Shared/PlayvilleRemotes";
+
+const player = Players.LocalPlayer;
+const screenGui = new Instance("ScreenGui");
+screenGui.Name = "PlayvilleEggUI";
+screenGui.Parent = player.WaitForChild("PlayerGui") as PlayerGui;
+
+const button = new Instance("TextButton");
+button.Size = UDim2.fromOffset(200, 50);
+button.Position = UDim2.fromScale(0.4, 0.8);
+button.Text = "Hatch Egg (Playville)";
+button.Parent = screenGui;
+
+button.MouseButton1Click.Connect(() => {
+    const newPet = PlayvilleRemotes.HatchEgg.InvokeServer();
+    print(`[Playville UI] You hatched a ${newPet}!`);
+});
+Job UI – src/Client/UI/PlayvilleJobUI.client.ts
+import { Players } from "@rbxts/services";
+import { PlayvilleRemotes } from "Shared/PlayvilleRemotes";
+
+const player = Players.LocalPlayer;
+const screenGui = new Instance("ScreenGui");
+screenGui.Name = "PlayvilleJobUI";
+screenGui.Parent = player.WaitForChild("PlayerGui") as PlayerGui;
+
+const jobButton = new Instance("TextButton");
+jobButton.Size = UDim2.fromOffset(200, 50);
+jobButton.Position = UDim2.fromScale(0.4, 0.7);
+jobButton.Text = "Take Job (Cashier)";
+jobButton.Parent = screenGui;
+
+jobButton.MouseButton1Click.Connect(() => {
+    const job = PlayvilleRemotes.AssignJob.InvokeServer("Cashier");
+    print(`[Playville UI] You are now a ${job}`);
+});
+Quest UI – src/Client/UI/PlayvilleQuestUI.client.ts
+import { Players } from "@rbxts/services";
+import { PlayvilleRemotes } from "Shared/PlayvilleRemotes";
+
+const player = Players.LocalPlayer;
+const screenGui = new Instance("ScreenGui");
+screenGui.Name = "PlayvilleQuestUI";
+screenGui.Parent = player.WaitForChild("PlayerGui") as PlayerGui;
+
+const questButton = new Instance("TextButton");
+questButton.Size = UDim2.fromOffset(200, 50);
+questButton.Position = UDim2.fromScale(0.6, 0.7);
+questButton.Text = "View Quests";
+questButton.Parent = screenGui;
+
+questButton.MouseButton1Click.Connect(() => {
+    const quests = PlayvilleRemotes.GetQuests.InvokeServer() as { description: string; reward: number; completed: boolean }[];
+    quests.forEach((q, i) => {
+        print(`[Playville Quest] ${i + 1}: ${q.description} | Reward: ${q.reward} | Done: ${q.completed}`);
+    });
+});
+5. Entry Points
+src/Server/main.server.ts
+import { PlayvilleDataService } from "Server/DataSystem/PlayvilleDataService";
+
+PlayvilleDataService.init();
+print("[Playville] Server systems initialized!");
+src/Client/main.client.ts
+import "Client/UI/PlayvilleEggUI.client";
+import "Client/UI/PlayvilleJobUI.client";
+import "Client/UI/PlayvilleQuestUI.client";
+
+print("[Playville] Client systems initialized!");
+6. Config
+default.project.json
+{
+  "name": "Playville",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$path": "src/Shared"
+    },
+    "ServerScriptService": {
+      "$path": "src/Server"
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "$path": "src/Client"
+      }
+    }
+  }
+}
